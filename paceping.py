@@ -4,12 +4,15 @@ from datetime import datetime
 import re
 import discord
 from discord.ext import commands
+from discord import app_commands
+import typing
 
 class PacePingBot(commands.Bot):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.pg_con = None
         self.add_commands()
+        self.paces_list = []
 
     async def setup_hook(self):
         if not self.pg_con:
@@ -22,11 +25,15 @@ class PacePingBot(commands.Bot):
             print(f"synced {len(sc)} commands")
         except Exception as e:
             print(e)
+        
+        await self.get_all_paces()
+        
         print(f"{__name__} is up and ready!")
 
     def add_commands(self):
         # this command allows the user to create a new pace to subscribe to
         @self.tree.command(name="pace_add", description="Allows an authorized user to create a new pace to subscribe to.")
+        @app_commands.describe(pace_label="The name of the pace you want to add")
         async def add_pace(interaction: discord.Interaction, pace_label: str):
             # first, check if the user has the right to do so.
             # to do so, the bot checks the roles. The user must have at least one of the following roles "owner", "modo" or "PacePingBoss"
@@ -44,6 +51,7 @@ class PacePingBot(commands.Bot):
                     await interaction.response.send_message(f"The pace **{pace_label}** has been created. Everybody can now subscribe to it.", ephemeral=True)
                     channel = await interaction.guild.fetch_channel(1292757506564554802)
                     await channel.send(f"{interaction.user.display_name} just created the pace **{pace_label}**. Everybody can now subscribe to it :)")
+                    await self.get_all_paces()
                 else:
                     await interaction.response.send_message(f"The pace {pace_label} already exists !", ephemeral=True)
             else:
@@ -71,6 +79,7 @@ class PacePingBot(commands.Bot):
 
         # this command allows the user to subscribe to a given pace
         @self.tree.command(name="pace_sub", description="Allows you to subscribe to a pace")
+        @app_commands.describe(pace_label="The name of the pace you want to subscribe to")
         async def pace_sub(interaction: discord.Interaction, pace_label: str):
             con = await self.pg_con.acquire()
             # first, we check if the pace that we want to add has a valid format
@@ -92,6 +101,14 @@ class PacePingBot(commands.Bot):
                 await interaction.response.send_message(f"Your pace name does not meet the requirements. Only numbers, lowercases, uppercases and underscores(_) are authorized.", ephemeral=True)
             await self.pg_con.release(con)
         
+        @pace_sub.autocomplete("pace_label")
+        async def pace_sub_autocompletion(interaction: discord.Interaction, current: str) -> typing.List[app_commands.Choice[str]]:
+            data = []
+            for pace in self.paces_list:
+                if current.lower() in pace.lower():
+                    data.append(app_commands.Choice(name=pace, value=pace))
+            return data
+        
         # this command allows the user to display the list of the paces he's subscribed to
         @self.tree.command(name="pace_my", description="Allows you to display the paces you're subscribed to")
         async def pace_my(interaction: discord.Interaction):
@@ -109,6 +126,7 @@ class PacePingBot(commands.Bot):
         
         # this command allows the user to unsubscribe from a pace he's subscribed to
         @self.tree.command(name="pace_unsub", description="Allows you to unsubscribe from a pace you're no longer interested in")
+        @app_commands.describe(pace_label="The name of the pace you want to unsubscribe from")
         async def pace_unsub(interaction: discord.Interaction, pace_label: str):
             con = await self.pg_con.acquire()
             # first, we check if the pace that we want to add has a valid format
@@ -129,9 +147,19 @@ class PacePingBot(commands.Bot):
             else:
                 await interaction.response.send_message(f"Your pace name does not meet the requirements. Only numbers, lowercases, uppercases and underscores(_) are authorized.", ephemeral=True)
             await self.pg_con.release(con)
+
+        @pace_unsub.autocomplete("pace_label")
+        async def pace_unsub_autocompletion(interaction: discord.Interaction, current: str) -> typing.List[app_commands.Choice[str]]:
+            data = []
+            for pace in self.paces_list:
+                if current.lower() in pace.lower():
+                    data.append(app_commands.Choice(name=pace, value=pace))
+            return data
         
         # this command allows the bot to ping users subscribed to a given pace
         @self.tree.command(name="pace_ping", description="Allows an authorized user to ping everyone subscribed to a given pace")
+        @app_commands.describe(pace_label="The name of the pace whose subscribers you want to ping")
+        @app_commands.describe(ping_message="The message to describe the kind of pace (time at chapter exit, checkpoint of the golden, etc...)")
         async def pace_ping(interaction: discord.Interaction, pace_label: str, ping_message: str):
             con = await self.pg_con.acquire()
             if ping_message == "":
@@ -161,7 +189,16 @@ class PacePingBot(commands.Bot):
             await self.log(interaction.user.id, datetime.now(), f'pace_ping {pace_label}, message = {ping_message}')
             await self.pg_con.release(con)
         
+        @pace_ping.autocomplete("pace_label")
+        async def pace_ping_autocompletion(interaction: discord.Interaction, current: str) -> typing.List[app_commands.Choice[str]]:
+            data = []
+            for pace in self.paces_list:
+                if current.lower() in pace.lower():
+                    data.append(app_commands.Choice(name=pace, value=pace))
+            return data
+        
         @self.tree.command(name="pace_remove", description="Allows an authorized user to remove a pace and all its subscriptions")
+        @app_commands.describe(pace_label="The name of the pace you want to remove")
         async def pace_remove(interaction: discord.Interaction, pace_label: str):
             con = await self.pg_con.acquire()
             # first, check if the user has the right to do so.
@@ -180,6 +217,7 @@ class PacePingBot(commands.Bot):
                     await self.pg_con.execute(f"DELETE FROM dim_paces WHERE \"PaceLabel\"='{pace_label}'")
                     await interaction.response.send_message(f'The pace **{pace_label}** has been removed as well as all its subscriptions.', ephemeral=True)
                     channel = await interaction.guild.fetch_channel(1292757506564554802)
+                    await self.get_all_paces()
                     await channel.send(f"{interaction.user.display_name} just removed the pace **{pace_label}** as well as all its subscriptions.")
                 else:
                     await interaction.response.send_message(f'The pace **{pace_label}** doesn''t exist. You can check the paces with the command **/pace_list**', ephemeral=True)
@@ -190,6 +228,13 @@ class PacePingBot(commands.Bot):
             await self.log(interaction.user.id, datetime.now(), f'pace_remove {pace_label}')
             await self.pg_con.release(con)
 
+        @pace_remove.autocomplete("pace_label")
+        async def pace_remove_autocompletion(interaction: discord.Interaction, current: str) -> typing.List[app_commands.Choice[str]]:
+            data = []
+            for pace in self.paces_list:
+                if current.lower() in pace.lower():
+                    data.append(app_commands.Choice(name=pace, value=pace))
+            return data
 
     # this method checks if the pace that one wants to add doesn't already exists
     async def pace_exists(self, pace_label):
@@ -214,3 +259,13 @@ class PacePingBot(commands.Bot):
     # check if the value passed is valid, to avoid sql injections
     async def check_pace_label(self, pace_label):
         return True if re.match('^\w+$', pace_label) is not None else False
+    
+    # this method stores all current paces in a list to be used for autocompletion
+    async def get_all_paces(self):
+        con = await self.pg_con.acquire()
+        resultset = await self.pg_con.fetch("SELECT DISTINCT \"PaceLabel\" FROM public.dim_paces")
+        if len(resultset) > 0:
+            self.paces_list.clear()
+            for r in resultset:
+                self.paces_list.append(r[0])
+        await self.pg_con.release(con)
