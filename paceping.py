@@ -19,6 +19,9 @@ class PacePingBot(commands.Bot):
             print("Setting up db..")
             self.pg_con = await asyncpg.create_pool(database=os.getenv('DB_PP'), user=os.getenv('DB_PP_USER'), password=os.getenv('DB_PP_USER_PWD'))
     
+    # method called when the bot has the status ready.
+    # we force the sync of the tree of commands
+    # then we retrieve all the current paces to help the autocompletion
     async def on_ready(self):
         try:
             sc = await self.tree.sync()
@@ -49,7 +52,7 @@ class PacePingBot(commands.Bot):
                     # if not, then let's create it
                     await self.pg_con.execute(f"INSERT INTO public.dim_paces(\"PaceLabel\") VALUES ('{pace_label}')")
                     await interaction.response.send_message(f"The pace **{pace_label}** has been created. Everybody can now subscribe to it.", ephemeral=True)
-                    channel = await interaction.guild.fetch_channel(1292757506564554802)
+                    channel = await interaction.guild.fetch_channel(int(os.getenv('PING_CHANNEL_ID')))
                     await channel.send(f"{interaction.user.display_name} just created the pace **{pace_label}**. Everybody can now subscribe to it :)")
                     await self.get_all_paces()
                 else:
@@ -101,6 +104,7 @@ class PacePingBot(commands.Bot):
                 await interaction.response.send_message(f"Your pace name does not meet the requirements. Only numbers, lowercases, uppercases and underscores(_) are authorized.", ephemeral=True)
             await self.pg_con.release(con)
         
+        # this method handles the autocompletion for the command pace_sub
         @pace_sub.autocomplete("pace_label")
         async def pace_sub_autocompletion(interaction: discord.Interaction, current: str) -> typing.List[app_commands.Choice[str]]:
             data = []
@@ -148,6 +152,7 @@ class PacePingBot(commands.Bot):
                 await interaction.response.send_message(f"Your pace name does not meet the requirements. Only numbers, lowercases, uppercases and underscores(_) are authorized.", ephemeral=True)
             await self.pg_con.release(con)
 
+        # this method handles the autocompletion for the command pace_unsub
         @pace_unsub.autocomplete("pace_label")
         async def pace_unsub_autocompletion(interaction: discord.Interaction, current: str) -> typing.List[app_commands.Choice[str]]:
             data = []
@@ -160,10 +165,11 @@ class PacePingBot(commands.Bot):
         @self.tree.command(name="pace_ping", description="Allows an authorized user to ping everyone subscribed to a given pace")
         @app_commands.describe(pace_label="The name of the pace whose subscribers you want to ping")
         @app_commands.describe(ping_message="The message to describe the kind of pace (time at chapter exit, checkpoint of the golden, etc...)")
-        async def pace_ping(interaction: discord.Interaction, pace_label: str, ping_message: str):
+        @app_commands.describe(live_link="The url to the live we can see the current pace (twitch, youtube, etc...)")
+        async def pace_ping(interaction: discord.Interaction, pace_label: str, ping_message: str, live_link: str):
             con = await self.pg_con.acquire()
             if ping_message == "":
-                ping_message = "Pace en cours !"
+                ping_message = "Live pace !"
             # first, check if the user has the right to do so.
             # to do so, the bot checks the roles. The user must have at least one of the following roles "owner", "modo" or "PacePingBoss"
             if not await self.check_role_access("PacePingBoss", interaction.user.roles):
@@ -175,10 +181,10 @@ class PacePingBot(commands.Bot):
                 # then check if the given pace exists
                 if await self.pace_exists(pace_label):
                     resultset = await self.pg_con.fetch(f"SELECT fpu.\"DiscordId\" FROM dim_paces dp INNER JOIN fait_paces_users fpu ON fpu.\"PaceId\"=dp.\"PaceId\" WHERE dp.\"PaceLabel\"='{pace_label}'")
-                    message = f'Pinging all the users subsribed to the pace **{pace_label}** => **{ping_message}**\n'
+                    message = f'Pinging all the users subsribed to the pace **{pace_label}** : {ping_message} => {live_link}\n'
                     for r in resultset:
                         message += f'<@{r[0]}> '
-                    channel = await interaction.guild.fetch_channel(1292757506564554802)
+                    channel = await interaction.guild.fetch_channel(int(os.getenv('PING_CHANNEL_ID')))
                     await channel.send(message)
                     await interaction.response.send_message(f'Subscribers to the pace **{pace_label}** have been pinged !', ephemeral=True)
                 else:
@@ -186,9 +192,10 @@ class PacePingBot(commands.Bot):
             else:
                 await interaction.response.send_message(f"Your pace name does not meet the requirements. Only numbers, lowercases, uppercases and underscores(_) are authorized.", ephemeral=True)
             # log the action
-            await self.log(interaction.user.id, datetime.now(), f'pace_ping {pace_label}, message = {ping_message}')
+            await self.log(interaction.user.id, datetime.now(), f'pace_ping {pace_label}')
             await self.pg_con.release(con)
         
+        # this method handles the autocompletion for the command pace_ping
         @pace_ping.autocomplete("pace_label")
         async def pace_ping_autocompletion(interaction: discord.Interaction, current: str) -> typing.List[app_commands.Choice[str]]:
             data = []
@@ -216,7 +223,7 @@ class PacePingBot(commands.Bot):
                     # then delete the pace itself
                     await self.pg_con.execute(f"DELETE FROM dim_paces WHERE \"PaceLabel\"='{pace_label}'")
                     await interaction.response.send_message(f'The pace **{pace_label}** has been removed as well as all its subscriptions.', ephemeral=True)
-                    channel = await interaction.guild.fetch_channel(1292757506564554802)
+                    channel = await interaction.guild.fetch_channel(int(os.getenv('PING_CHANNEL_ID')))
                     await self.get_all_paces()
                     await channel.send(f"{interaction.user.display_name} just removed the pace **{pace_label}** as well as all its subscriptions.")
                 else:
@@ -228,6 +235,7 @@ class PacePingBot(commands.Bot):
             await self.log(interaction.user.id, datetime.now(), f'pace_remove {pace_label}')
             await self.pg_con.release(con)
 
+        # this method handles the autocompletion for the command pace_remove
         @pace_remove.autocomplete("pace_label")
         async def pace_remove_autocompletion(interaction: discord.Interaction, current: str) -> typing.List[app_commands.Choice[str]]:
             data = []
@@ -243,7 +251,7 @@ class PacePingBot(commands.Bot):
     
     # this method checks if the role of the user is in the list of authorized roles
     async def check_role_access(self, user_role, author_roles):
-        return True if user_role.lower() == 'owner' or user_role.lower() == 'modo' or user_role.lower() in [ar.name.lower() for ar in author_roles] else False
+        return True if 'owner' in [ar.name.lower() for ar in author_roles] or 'modo' in [ar.name.lower() for ar in author_roles] or user_role.lower() in [ar.name.lower() for ar in author_roles] else False
     
     # this method checks if a given user isn't already subsribed to a given pace
     async def is_user_subsribed(self, user_id, pace_label):
